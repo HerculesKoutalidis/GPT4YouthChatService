@@ -2,9 +2,10 @@ version: '3.8'
 services:
   ollama:
     image: ollama/ollama:latest
+    restart: always
     container_name: ollama
     ports:
-      - "11434:11434"
+      - "11435:11434"
     volumes:
       - ollama_data:/root/.ollama
     deploy:
@@ -21,12 +22,14 @@ services:
     command: serve
 
   streamlit:
+    image: streamlit_llama_service
     build: .
     container_name: streamlit_app
+    restart: always
     ports:
       - "8501:8501"
     environment:
-      - BASE_URL=http://ollama:11434
+      - BASE_URL=http://ollama:11435
     depends_on:
       - ollama
     networks:
