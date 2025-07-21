@@ -7,7 +7,7 @@ from PIL import Image
 
 #%%
 model = OllamaLLM(model="llama3.2:3b", base_url="http://ollama:11434") 
-#model = OllamaLLM(model="llama3.1:8b-instruct-q5_1")
+#model = OllamaLLM(model="llama3.1:8b-instruct-q5_1"
 
 
 template = """
