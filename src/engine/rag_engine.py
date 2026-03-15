@@ -6,7 +6,7 @@ from sentence_transformers import SentenceTransformer
 # Logic for environment-based config
 IS_DOCKER = os.environ.get("RUNNING_IN_DOCKER", "false").lower() == "true"
 VLLM_API_BASE = "http://vllm-engine:8005/v1" if IS_DOCKER else "http://localhost:8005/v1"
-QDRANT_URL = "http://qdrant-gptforyouth:6343" if IS_DOCKER else "http://localhost:6343"
+QDRANT_URL = "http://qdrant-gptforyouth:6333" if IS_DOCKER else "http://localhost:6343"
 
 class ChatEngine:
     def __init__(self):

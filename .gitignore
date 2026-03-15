@@ -1,5 +1,13 @@
+# Environments and Secrets
 .venv/
+.env
+
 __pycache__/
 *.pyc
-.env
 *.log
+
+# Raw Data (Optional: ignore the PDFs so you don't bloat Git)
+data/raw_pdfs/*.pdf
+
+# Database Storage
+qdrant_storage/*

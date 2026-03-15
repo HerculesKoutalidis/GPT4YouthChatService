@@ -39,8 +39,8 @@ services:
     image: qdrant/qdrant:latest
     container_name: qdrant-gptforyouth
     ports:
-      - "6343:6343"
-      - "6344:6344"
+      - "6343:6333"
+      - "6344:6334"
     volumes:
       - ./qdrant_storage:/qdrant/storage
     restart: unless-stopped
