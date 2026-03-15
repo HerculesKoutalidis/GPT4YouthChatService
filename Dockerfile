@@ -1,8 +1,10 @@
 # Use a lightweight Python base image
-FROM python:3.10-slim
+FROM public.ecr.aws/docker/library/python:3.10-slim
 
 # Set the working directory inside the container
-WORKDIR /app
+WORKDIR /app    
+# Set PYTHONPATH so python can find the 'src' module from /app
+ENV PYTHONPATH="${PYTHONPATH}:/app"
 
 # Copy requirements and install them
 COPY requirements.txt .
@@ -15,4 +17,4 @@ COPY . .
 EXPOSE 8505
 
 # Command to run the app
-CMD ["streamlit", "run", "chatbot_backend.py", "--server.port", "8505", "--server.address", "0.0.0.0"]
+CMD ["streamlit", "run", "src/ui/chatbot_backend.py", "--server.port", "8505", "--server.address", "0.0.0.0"]

@@ -34,16 +34,28 @@ services:
       --gpu-memory-utilization 0.30
       --max-model-len 32768
 
-  # 2. THE STREAMLIT UI
+  # 2. THE VECTOR DATABASE
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-gptforyouth
+    ports:
+      - "6343:6343"
+      - "6344:6344"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+
+  # 3. THE STREAMLIT UI
   streamlit-ui:
     build: .
     restart: unless-stopped
     container_name: streamlit-gptforyouth
     ports:
-      - "8505:8505"
+      - "8505:8505" 
     environment:
       - RUNNING_IN_DOCKER=true
       # 172.17.0.1 is usually the host IP in Docker's default bridge network
       - HOST_IP=172.17.0.1
+      - VLLM_API_KEY=${VLLM_API_KEY}
     depends_on:
       - vllm-engine
