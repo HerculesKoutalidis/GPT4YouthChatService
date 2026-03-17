@@ -8,6 +8,8 @@ __pycache__/
 
 # Raw Data (Optional: ignore the PDFs so you don't bloat Git)
 data/raw_pdfs/*.pdf
+# Ignore debug text files in the pdf directory
+data/raw_pdfs/*.txt
 
 # Database Storage
 qdrant_storage/*
