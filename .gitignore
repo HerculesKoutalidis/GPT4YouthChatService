@@ -11,3 +11,8 @@ data/raw_pdfs/*.pdf
 
 # Database Storage
 qdrant_storage/*
+
+# Configuration
+# We track the main config but ignore any "local" overrides
+src/*.local.yaml
+src/config.local.yaml

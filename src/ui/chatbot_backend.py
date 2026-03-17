@@ -2,6 +2,7 @@ import os
 import streamlit as st
 from PIL import Image 
 from src.engine.rag_engine import ChatEngine 
+from src.engine.rag_engine import config
 
 # --- Page Config (MUST BE FIRST) ---
 st.set_page_config(page_title="GPT4Youth Assistant", layout="wide")
@@ -57,14 +58,13 @@ except FileNotFoundError:
 # --- Session State (Memory & Logic) ---
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "system", "content": "You are a helpful assistant specialized in the EU Job Market and Education sectors."}
+        {"role": "system", "content": config['system_instructions']}
     ]
 
 if "editing_last" not in st.session_state:
     st.session_state.editing_last = False
 
 # --- UI Layout: Chat History ---
-
 # 1. Identify the last user message index
 last_user_idx = None
 for i in range(len(st.session_state.messages) - 1, -1, -1):
@@ -99,7 +99,7 @@ for i, message in enumerate(st.session_state.messages):
                     st.session_state.editing_last = True
                     st.rerun()
 
-# --- Trigger Processing ---
+# --- Trigger Processing of last user's message ---
 if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user" and not st.session_state.editing_last:
     process_query(st.session_state.messages[-1]["content"])
 
