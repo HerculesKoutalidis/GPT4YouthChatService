@@ -3,12 +3,12 @@ llm:
   model_name: "meta-llama/Llama-3.2-3B-Instruct"
   temperature: 0.7
   max_tokens: 2048
-  max_history: 70
+  max_history: 20
 
 # RAG Parameters
 rag:
   collection_name: "eu_job_market"
-  top_k: 80
+  top_k: 5
   chunk_size: 2000
   chunk_overlap: 300
 
