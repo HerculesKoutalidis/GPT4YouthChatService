@@ -2,6 +2,16 @@ import os
 import fitz  # PyMuPDF
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+# This file inspects a PDF and shows how it will be processed by the RAG pipeline.
+#
+# 1. Loads a selected PDF file from the raw_pdfs directory.
+# 2. Extracts the full text content from the PDF.
+# 3. Saves the extracted text to a .txt file for inspection.
+# 4. Splits the text into chunks using the same settings as ingest_pdfs.py.
+# 5. Saves all generated chunks to a separate text file.
+# 6. Reports the total number of chunks created.
+# 7. Helps validate PDF parsing and chunking before ingestion into Qdrant.
+
 # --- CONFIGURATION ---
 # The name of the PDF you want to inspect (Change this string as needed)
 TARGET_PDF_NAME = "Bookmarks_online.pdf" 

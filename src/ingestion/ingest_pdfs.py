@@ -8,6 +8,18 @@ from qdrant_client.models import PointStruct, VectorParams, Distance
 from sentence_transformers import SentenceTransformer
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+# This file builds the RAG knowledge base by processing PDF documents.
+#
+# 1. Reads all PDF files from the raw_pdfs directory.
+# 2. Extracts text content from each PDF.
+# 3. Detects the document language and filters unsupported languages.
+# 4. Splits the text into overlapping chunks.
+# 5. Generates embeddings for each chunk using a SentenceTransformer model.
+# 6. Creates metadata (payload) for each chunk.
+# 7. Creates the Qdrant collection if it does not already exist.
+# 8. Uploads chunk embeddings and metadata to Qdrant.
+# 9. Stores the data for semantic retrieval in the chatbot RAG pipeline.
+
 # --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
