@@ -18,3 +18,7 @@ qdrant_storage/*
 # We track the main config but ignore any "local" overrides
 src/*.local.yaml
 src/config.local.yaml
+
+
+#Claude md
+CLAUDE.md

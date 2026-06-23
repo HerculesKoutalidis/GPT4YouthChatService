@@ -1,5 +1,6 @@
 import os
 import uuid
+import hashlib
 import logging
 import fitz  # PyMuPDF
 from langdetect import detect, LangDetectException
@@ -19,6 +20,11 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 # 7. Creates the Qdrant collection if it does not already exist.
 # 8. Uploads chunk embeddings and metadata to Qdrant.
 # 9. Stores the data for semantic retrieval in the chatbot RAG pipeline.
+
+def chunk_id(filename: str, chunk_index: int) -> str:
+    key = f"{filename}:{chunk_index}"
+    return hashlib.md5(key.encode()).hexdigest()
+
 
 # --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -92,7 +98,7 @@ def process_pdfs():
 
         # 4. Prepare Embeddings and Metadata
         points = []
-        document_id = str(uuid.uuid4()) # Unique ID for the whole document
+        document_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, filename))
         
         for i, chunk_text in enumerate(chunks):
             # The Metadata Schema (Payload)
@@ -114,7 +120,7 @@ def process_pdfs():
             
             points.append(
                 PointStruct(
-                    id=str(uuid.uuid4()), # Unique ID for the specific chunk
+                    id=chunk_id(filename, i),
                     vector=vector,
                     payload=payload
                 )

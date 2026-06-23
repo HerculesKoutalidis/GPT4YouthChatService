@@ -144,20 +144,15 @@ class ChatEngine:
         # Build RAG prompt
         # -----------------------------
 
-        enhanced_prompt = f"""
-                            Use the retrieved information below when it is relevant to the user's question.
-
-                            Retrieved Context:
-                            {context_data}
-
-                            User Question:
-                            {prompt}
-
-                            Instructions:
-                            - Use the retrieved context whenever it is relevant.
-                            - If the context does not contain the answer, rely on your general knowledge.
-                            - Do not claim information exists in the context if it does not.
-                            """
+        enhanced_prompt = (
+            "Use the retrieved information below when it is relevant to the user's question.\n\n"
+            f"Retrieved Context:\n{context_data}\n\n"
+            f"User Question:\n{prompt}\n\n"
+            "Instructions:\n"
+            "- Use the retrieved context whenever it is relevant.\n"
+            "- If the context does not contain the answer, rely on your general knowledge.\n"
+            "- Do not claim information exists in the context if it does not."
+        )
 
         # -----------------------------
         # Keep only recent conversation
