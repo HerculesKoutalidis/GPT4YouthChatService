@@ -25,6 +25,15 @@ QDRANT_URL = (
 # Configuration loader
 # --------------------------------------------------
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
 def load_config():
     """
     Load the default configuration and optionally
@@ -47,7 +56,7 @@ def load_config():
     if os.path.exists(local_path):
         with open(local_path, "r") as f:
             local_config = yaml.safe_load(f)
-            config.update(local_config)
+            _deep_merge(config, local_config)
     return config
 
 config = load_config()
