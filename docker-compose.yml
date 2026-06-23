@@ -61,3 +61,4 @@ services:
       - .:/app  # This syncs local files with the container in real-time
     depends_on:
       - vllm-engine
+      - qdrant

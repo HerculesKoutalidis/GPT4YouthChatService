@@ -128,6 +128,11 @@ class ChatEngine:
             # even if retrieval fails.
             return ""
 
+    def _build_retrieval_query(self, messages: list, current_prompt: str) -> str:
+        recent = [m["content"] for m in messages[-4:] if m["role"] != "system"]
+        recent.append(current_prompt)
+        return " ".join(recent)
+
     def get_llm_response(self, messages, prompt):
         """
         Build the final prompt and send it to vLLM.
@@ -138,7 +143,8 @@ class ChatEngine:
         # Retrieve supporting documents
         # -----------------------------
 
-        context_data = self.get_context(prompt)
+        retrieval_query = self._build_retrieval_query(messages, prompt)
+        context_data = self.get_context(retrieval_query)
 
         # -----------------------------
         # Build RAG prompt
