@@ -22,3 +22,13 @@ src/config.local.yaml
 
 #Claude md
 CLAUDE.md
+
+#Storage
+qdrant_storage/
+
+
+
+__pycache__/
+
+
+*.pyc
