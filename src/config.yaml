@@ -7,10 +7,11 @@ llm:
 
 # RAG Parameters
 rag:
-  collection_name: "eu_job_market"
-  top_k: 5
-  chunk_size: 2000
-  chunk_overlap: 300
+  collection_name: "gpt4youth_docs"          # child chunks (search)
+  parent_collection_name: "gpt4youth_parents" # parent sections (context)
+  child_top_k: 18            # how many children chunks are retrieved 
+  max_parents: 4             # how many unique parents are included in the context
+  max_parents_per_doc: 2     # sources variety: how many parents from a single document
 
 # Chatbot System Instructions
 # The '|' tells YAML to keep the newlines and the structure below it.

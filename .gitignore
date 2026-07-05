@@ -20,13 +20,18 @@ src/*.local.yaml
 src/config.local.yaml
 
 
+#Evaluation files
+eval/results/*.jsonl
+
+
 #Claude md
 CLAUDE.md
 
 #Storage
 qdrant_storage/
 
-
+#Metadata
+data/metadata/*
 
 __pycache__/
 

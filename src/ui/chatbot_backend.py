@@ -31,15 +31,18 @@ def process_query(prompt):
         message_placeholder = st.empty()
         full_response = ""
         try:
-            # Call the decoupled engine
             stream = engine.get_llm_response(st.session_state.messages, prompt)
             for chunk in stream:
                 if chunk.choices[0].delta.content:
                     full_response += chunk.choices[0].delta.content
                     message_placeholder.markdown(full_response + "")
+
+            # append deterministic citations (guaranteed, not model-dependent)
+            sources_md = engine.format_sources()
+            if sources_md:
+                full_response += "\n" + sources_md
+
             message_placeholder.markdown(full_response)
-            
-            # Save the final response to memory
             st.session_state.messages.append({"role": "assistant", "content": full_response})
         except Exception as e:
             st.error(f"Engine Error: {e}")
