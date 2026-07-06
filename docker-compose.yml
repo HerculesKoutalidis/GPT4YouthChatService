@@ -34,6 +34,58 @@ services:
       --gpu-memory-utilization ${GPU_MEM_UTIL}
       --max-model-len ${MAX_MODEL_LEN}
 
+  # 1b. EMBEDDINGS SERVICE (bge-m3, dense 1024-dim) — Step 2
+  #     Serves /embed over HTTP, exactly like vLLM serves the LLM.
+  #     Used by BOTH ingestion (host -> localhost:8090) and the app
+  #     (container -> http://tei-embeddings:80). Same model both sides.
+  tei-embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cuda-1.9
+    restart: unless-stopped
+    container_name: tei-embeddings
+    ports:
+      - "8090:80"
+    runtime: nvidia
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+    volumes:
+      - tei_data:/data          # model weights cached here (downloaded once)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: >
+      --model-id BAAI/bge-m3
+      --auto-truncate
+      --max-batch-tokens 16384
+
+  # 1c. RERANKER SERVICE (bge-reranker-v2-m3, cross-encoder) — Step 2
+  #     Serves /rerank; scores (query, chunk) pairs to re-order candidates.
+  tei-reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cuda-1.9
+    restart: unless-stopped
+    container_name: tei-reranker
+    ports:
+      - "8091:80"
+    runtime: nvidia
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+    volumes:
+      - tei_data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: >
+      --model-id BAAI/bge-reranker-v2-m3
+      --auto-truncate
+      --max-batch-tokens 16384
+
   # 2. THE VECTOR DATABASE
   qdrant:
     image: qdrant/qdrant:latest
@@ -62,3 +114,8 @@ services:
     depends_on:
       - vllm-engine
       - qdrant
+      - tei-embeddings
+      - tei-reranker
+
+volumes:
+  tei_data:
