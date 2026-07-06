@@ -105,6 +105,15 @@ def run_one(engine: ChatEngine, question: str, fallback_limit: int):
     fed to the LLM. We record those, so the judge scores what the model saw.
     Old/other engines without last_sources fall back to a direct child search."""
     answer = generate_answer(engine, question)
+
+    # The UI appends a deterministic 'Sources' block after the stream; the eval
+    # must record the SAME thing, otherwise the judge is blind to citations and
+    # unfairly scores source_attribution.
+    if hasattr(engine, "format_sources"):
+        smd = engine.format_sources()
+        if smd:
+            answer = answer + "\n" + smd
+
     src = getattr(engine, "last_sources", None)
     if src:
         retrieved = [{

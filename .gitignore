@@ -33,6 +33,9 @@ qdrant_storage/
 #Metadata
 data/metadata/*
 
+#Documents
+docs/*
+
 __pycache__/
 
 
