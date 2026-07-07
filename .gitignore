@@ -22,6 +22,7 @@ src/config.local.yaml
 
 #Evaluation files
 eval/results/*.jsonl
+!eval/results/*_judged.jsonl
 
 
 #Claude md
