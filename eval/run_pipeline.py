@@ -16,14 +16,14 @@ compare versions later (baseline vs after each roadmap step).
 HOW TO RUN
 --------------------------------------------------------------------------
 Recommended — inside the streamlit container (has all deps + can reach the
-qdrant/vllm containers by service name, and your repo is mounted at /app):
+qdrant/vllm/tei containers by service name, and your repo is mounted at /app):
 
-    docker compose exec streamlit-ui python -m eval.run_pipeline --run-name baseline_v0.2
+    docker compose exec streamlit-ui python3 -m eval.run_pipeline --run-name step2_bge_rerank
 
-From the host instead (needs deps installed locally + qdrant/vllm ports
+From the host instead (needs deps installed locally + qdrant/vllm/tei ports
 published, which they are): make sure VLLM_API_KEY is exported, then:
 
-    python -m eval.run_pipeline --run-name baseline_v0.2
+    python3 -m eval.run_pipeline --run-name step2_bge_rerank
 
 Notes:
   * Retrieval is deterministic, so the chunks recorded here match what the
@@ -44,6 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.engine.rag_engine import ChatEngine  # noqa: E402
+from src.engine.tei_client import embed as tei_embed  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 QUESTIONS = HERE / "questions.jsonl"
@@ -62,17 +63,18 @@ def load_questions():
 
 def retrieve_chunks(engine: ChatEngine, query: str, limit: int):
     """
-    Mirror ChatEngine.get_context() but keep the results STRUCTURED
-    (text + metadata + score) instead of collapsing them into one string.
-    Uses the engine's own encoder / qdrant client / collection so it stays
+    Fallback only (used when an engine doesn't expose last_sources): a plain
+    child-collection search, kept STRUCTURED (text + metadata + score). Uses the
+    engine's own qdrant client + child collection and bge-m3 via TEI, so it stays
     in sync with the real pipeline.
     """
-    vec = engine.encoder.encode(query).tolist()
-    hits = engine.qdrant.search(
-        collection_name=engine.collection_name,
-        query_vector=vec,
+    vec = tei_embed(query)
+    hits = engine.qdrant.query_points(
+        collection_name=engine.child_collection,
+        query=vec,
         limit=limit,
-    )
+        with_payload=True,
+    ).points
     chunks = []
     for rank, h in enumerate(hits, start=1):
         payload = h.payload or {}
@@ -101,9 +103,9 @@ def generate_answer(engine: ChatEngine, question: str) -> str:
 def run_one(engine: ChatEngine, question: str, fallback_limit: int):
     """Generate the answer, then record the context the engine ACTUALLY used.
 
-    New engine (small-to-big) exposes engine.last_sources — the parent sections
-    fed to the LLM. We record those, so the judge scores what the model saw.
-    Old/other engines without last_sources fall back to a direct child search."""
+    New engine (small-to-big + rerank) exposes engine.last_sources — the parent
+    sections fed to the LLM. We record those, so the judge scores what the model
+    saw. Engines without last_sources fall back to a direct child search."""
     answer = generate_answer(engine, question)
 
     # The UI appends a deterministic 'Sources' block after the stream; the eval
@@ -132,11 +134,11 @@ def run_one(engine: ChatEngine, question: str, fallback_limit: int):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-name", default=None,
-                    help="Label for this run, e.g. baseline_v0.2 or after_step1. "
+                    help="Label for this run, e.g. baseline_v0.2 or step2_bge_rerank. "
                          "Defaults to a timestamp.")
     ap.add_argument("--limit", type=int, default=None,
                     help="How many chunks to RECORD per question. "
-                         "Default = your config rag.top_k. Lower it (e.g. 10) to "
+                         "Default = your config rag.retrieve_top_k. Lower it (e.g. 10) to "
                          "keep result files small; the answer still uses the real pipeline.")
     ap.add_argument("--sleep", type=float, default=0.0,
                     help="Seconds to pause between questions (be gentle on the shared GPU).")
@@ -146,9 +148,9 @@ def main():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RESULTS_DIR / f"{run_name}.jsonl"
 
-    print("Loading ChatEngine (this loads the encoder + connects to Qdrant/vLLM)...")
+    print("Loading ChatEngine (connects to Qdrant/vLLM/TEI)...")
     engine = ChatEngine()
-    record_limit = args.limit or engine.config["rag"].get("child_top_k") or 10
+    record_limit = args.limit or engine.config["rag"].get("retrieve_top_k") or 10
     print(f"Recording top {record_limit} retrieved chunks per question.")
 
     questions = load_questions()
@@ -174,7 +176,7 @@ def main():
                 time.sleep(args.sleep)
 
     print(f"\nDone. Wrote {out_path}")
-    print("Next:  python -m eval.judge --run", run_name)
+    print("Next:  python3 -m eval.judge --run", run_name)
 
 
 if __name__ == "__main__":

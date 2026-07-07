@@ -1,7 +1,8 @@
 import os, yaml
 from openai import OpenAI
 from qdrant_client import QdrantClient
-from sentence_transformers import SentenceTransformer
+
+from .tei_client import embed as tei_embed, rerank as tei_rerank
 
 
 # --------------------------------------------------
@@ -68,12 +69,13 @@ def _format_pages(ps, pe):
 
 class ChatEngine:
     """
-    RAG pipeline (Step 1 — small-to-big):
+    RAG pipeline (Step 2 — small-to-big + rerank):
 
     User query
-        -> embed (all-MiniLM, CPU)
-        -> search CHILD collection (gpt4youth_docs)      [precise, small chunks]
-        -> dedupe hits to their PARENTS (with per-doc cap for diversity)
+        -> embed (bge-m3, GPU via tei-embeddings)
+        -> search CHILD collection (gpt4youth_docs)      [retrieve_top_k candidates]
+        -> rerank (bge-reranker-v2-m3, tei-reranker)     [cross-encoder re-order]
+        -> dedupe hits to their PARENTS (per-doc cap for diversity)
         -> fetch PARENT sections (gpt4youth_parents)     [rich context]
         -> build prompt + deterministic Sources list
         -> vLLM / Llama-3.2-3B  (streaming)
@@ -87,12 +89,12 @@ class ChatEngine:
             base_url=VLLM_API_BASE)
 
         self.qdrant = QdrantClient(url=QDRANT_URL)
-        self.encoder = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
 
         rag = self.config["rag"]
         self.child_collection = rag.get("collection_name", "gpt4youth_docs")
         self.parent_collection = rag.get("parent_collection_name", "gpt4youth_parents")
-        self.child_top_k = rag.get("child_top_k", 18)
+        self.retrieve_top_k = rag.get("retrieve_top_k", 50)
+        self.use_reranker = rag.get("use_reranker", True)
         self.max_parents = rag.get("max_parents", 4)
         self.max_parents_per_doc = rag.get("max_parents_per_doc", 2)
 
@@ -104,24 +106,38 @@ class ChatEngine:
         self.last_context = ""
 
     # ---------------------------------------------------------------
-    # Retrieval: child search -> parent expansion (small-to-big)
+    # Retrieval: child search -> rerank -> parent expansion
     # ---------------------------------------------------------------
     def get_context(self, query: str) -> str:
         self.last_sources = []
         self.last_context = ""
         try:
-            qvec = self.encoder.encode(query).tolist()
+            qvec = tei_embed(query)  # bge-m3, 1024-dim (GPU via tei-embeddings)
             child_hits = self.qdrant.query_points(
                 collection_name=self.child_collection,
                 query=qvec,
-                limit=self.child_top_k,
+                limit=self.retrieve_top_k,
                 with_payload=True,
             ).points
 
-            # pick unique parents in order of best child score, with a
-            # per-document cap so one big manual can't monopolise the context.
-            # Keep the matched child text too -- it's the exact span that
-            # earned this parent's inclusion, which the judge needs to see.
+            if not child_hits:
+                return ""
+
+            # --- rerank stage: cross-encoder re-orders the dense candidates ---
+            # bge-reranker scores (query, child_text) jointly, which is far more
+            # accurate than cosine alone. If the reranker is unreachable we fall
+            # back to the dense order rather than losing context entirely.
+            if self.use_reranker:
+                try:
+                    texts = [(h.payload or {}).get("text", "") for h in child_hits]
+                    ranked = tei_rerank(query, texts)  # [{"index","score"}...] best-first
+                    child_hits = [child_hits[r["index"]] for r in ranked]
+                except Exception as e:
+                    print(f"Rerank failed, falling back to dense order: {e}")
+
+            # pick unique parents by (reranked) child order, with a per-document
+            # cap so one big manual can't monopolise the context. Keep the matched
+            # child text too -- the exact span that earned this parent's inclusion.
             chosen, per_doc, matched_excerpt = [], {}, {}
             for h in child_hits:
                 pl = h.payload or {}
@@ -173,7 +189,7 @@ class ChatEngine:
             return self.last_context
 
         except Exception as e:
-            print(f"RAG retrieval failed (Qdrant offline?): {e}")
+            print(f"RAG retrieval failed (Qdrant/TEI offline?): {e}")
             return ""
 
     def format_sources(self) -> str:

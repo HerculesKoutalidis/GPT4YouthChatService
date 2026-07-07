@@ -14,33 +14,43 @@ gets stored and shown.
 
 Prereqs:
   1) Qdrant running:            docker compose up -d qdrant
-  2) Catalog built & reviewed:  python src/ingestion/build_catalog.py
-  3) PDFs in data/raw_pdfs/
+  2) TEI embeddings running:    docker compose up -d tei-embeddings
+  3) Catalog built & reviewed:  python3 src/ingestion/build_catalog.py
+  4) PDFs in data/raw_pdfs/
 
-Run (from project root, Qdrant reachable on localhost:6343):
-  python src/ingestion/ingest_pdfs.py            # create-if-missing + upsert
-  python src/ingestion/ingest_pdfs.py --reset    # drop & rebuild both collections
+Run (from project root, Qdrant on localhost:6343, TEI on localhost:8090):
+  python3 src/ingestion/ingest_pdfs.py            # create-if-missing + upsert
+  python3 src/ingestion/ingest_pdfs.py --reset    # drop & rebuild both collections
 
 Re-running is safe: each document's old points are deleted before re-upsert
 (deterministic IDs + per-doc cleanup => no duplicates, no orphans).
 
-Step 1 stays on all-MiniLM-L6-v2 (dense only). Sparse vectors + bge-m3 arrive
-in Step 2 (which will recreate these collections).
+Step 2: embeddings now come from BAAI/bge-m3 (1024-dim, multilingual) served by
+the tei-embeddings container over HTTP — NOT from an in-process MiniLM on CPU.
+The embedding MODEL is defined once in docker-compose.yml (the tei-embeddings
+service); this script never loads it, it just calls /embed. Because the vector
+size changed 384 -> 1024, you MUST re-ingest with --reset.
 """
 
 import os
+import sys
 import uuid
 import argparse
 import logging
+
+# Make the project root importable so we can share src/engine/tei_client.py
+# (ingestion normally runs with src/ingestion on sys.path, not the root).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     PointStruct, VectorParams, Distance, Filter, FieldCondition, MatchValue,
 )
-from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer
 
 import pdf_processing as pp
 from catalog import CATALOG_COLUMNS, SUPPORTED_LANGS, load_catalog
+from src.engine.tei_client import embed as tei_embed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ingest")
@@ -54,8 +64,15 @@ QDRANT_URL = "http://localhost:6343"
 CHILD_COLLECTION = "gpt4youth_docs"
 PARENT_COLLECTION = "gpt4youth_parents"
 
-CHILD_TOKENS, CHILD_OVERLAP = 180, 30      # fits MiniLM's 256-token limit (+ header)
+# Ingestion-time knobs (chunk sizing). Kept identical to Step 1 on purpose, so
+# the ONLY variable changing in this step is the embedding model + reranker.
+CHILD_TOKENS, CHILD_OVERLAP = 180, 30      # small, precise chunks (what we search)
 PARENT_TOKENS, PARENT_OVERLAP = 1000, 120  # not embedded for search; just context
+
+# Must match the --model-id of the `tei-embeddings` service in docker-compose.yml.
+# Used ONLY to load the tokenizer locally for token-based chunk sizing + token_count;
+# the actual vectors come from the TEI service, not from this.
+EMBED_MODEL_ID = os.environ.get("EMBED_MODEL_ID", "BAAI/bge-m3")
 
 NS = uuid.NAMESPACE_URL
 
@@ -171,6 +188,17 @@ def to_points(items):
     return [PointStruct(id=i["id"], vector=i["vector"], payload=i["payload"]) for i in items]
 
 
+# Qdrant caps a single HTTP request at 32MB. A 1024-dim bge-m3 vector serialises
+# to ~2.7x the old 384-dim MiniLM one, so a whole PDF's children can blow past
+# that in one shot. Upsert in batches to keep each request comfortably under it.
+UPSERT_BATCH = 256
+
+
+def upsert_in_batches(qc, name, points, batch=UPSERT_BATCH):
+    for i in range(0, len(points), batch):
+        qc.upsert(name, points=points[i:i + batch])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reset", action="store_true", help="Drop & recreate both collections first.")
@@ -185,14 +213,27 @@ def main():
         raise SystemExit(f"No catalog at {CATALOG_PATH}. Run build_catalog.py first "
                          f"(or pass --allow-missing).")
 
-    log.info("Loading all-MiniLM-L6-v2 (CPU)...")
-    encoder = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
-    dim = encoder.get_sentence_embedding_dimension()
-    child_sp = pp.make_token_splitter(encoder.tokenizer, CHILD_TOKENS, CHILD_OVERLAP)
-    parent_sp = pp.make_token_splitter(encoder.tokenizer, PARENT_TOKENS, PARENT_OVERLAP)
+    # Tokenizer is only for chunk sizing / token_count — the vectors come from TEI.
+    log.info(f"Loading tokenizer for {EMBED_MODEL_ID} (CPU, chunk sizing only)...")
+    tokenizer = AutoTokenizer.from_pretrained(EMBED_MODEL_ID)
+
+    # Ask the TEI embeddings service for the vector size (single source of truth).
+    log.info("Probing tei-embeddings for the vector dimension...")
+    try:
+        dim = len(tei_embed("dimension probe"))
+    except Exception as e:
+        raise SystemExit(
+            f"Cannot reach tei-embeddings ({e}).\n"
+            f"Start it with:  docker compose up -d tei-embeddings"
+        )
+    log.info(f"TEI embeddings dim = {dim}")
+
+    child_sp = pp.make_token_splitter(tokenizer, CHILD_TOKENS, CHILD_OVERLAP)
+    parent_sp = pp.make_token_splitter(tokenizer, PARENT_TOKENS, PARENT_OVERLAP)
 
     def encode_fn(texts):
-        return [v.tolist() for v in encoder.encode(texts, batch_size=64, show_progress_bar=False)]
+        # bge-m3 via TEI (GPU). tei_embed batches internally (<=32/request).
+        return tei_embed(texts)
 
     qc = QdrantClient(url=QDRANT_URL)
     ensure_collection(qc, CHILD_COLLECTION, dim, args.reset)
@@ -222,15 +263,15 @@ def main():
             continue
 
         children, parents = build_points_for_doc(
-            fn, pages, toc, meta, child_sp, parent_sp, encode_fn, tokenizer=encoder.tokenizer,
+            fn, pages, toc, meta, child_sp, parent_sp, encode_fn, tokenizer=tokenizer,
         )
         document_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, fn))
         delete_doc(qc, CHILD_COLLECTION, document_id)     # clean re-ingest
         delete_doc(qc, PARENT_COLLECTION, document_id)
         if parents:
-            qc.upsert(PARENT_COLLECTION, points=to_points(parents))
+            upsert_in_batches(qc, PARENT_COLLECTION, to_points(parents))
         if children:
-            qc.upsert(CHILD_COLLECTION, points=to_points(children))
+            upsert_in_batches(qc, CHILD_COLLECTION, to_points(children))
         tot_c += len(children)
         tot_p += len(parents)
         log.info(f"OK {fn}: {len(parents)} parents / {len(children)} children "
@@ -238,8 +279,8 @@ def main():
 
     log.info(f"DONE. {tot_p} parents in '{PARENT_COLLECTION}', "
              f"{tot_c} children in '{CHILD_COLLECTION}'.")
-    log.info("Next: point config.yaml rag.collection_name -> 'gpt4youth_docs', "
-             "then wire small-to-big retrieval in rag_engine.py.")
+    log.info("Next (Step 2.3): wire bge-m3 query embedding + bge-reranker-v2-m3 "
+             "into rag_engine.py, and add retrieve_top_k / rerank_top_n to config.yaml.")
 
 
 if __name__ == "__main__":
