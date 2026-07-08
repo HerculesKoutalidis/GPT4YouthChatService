@@ -249,4 +249,5 @@ class ChatEngine:
             temperature=self.config["llm"]["temperature"],
             max_tokens=self.config["llm"]["max_tokens"],
             stream=True,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},   # Qwen3 only
         )

@@ -26,7 +26,7 @@ services:
               count: 1
               capabilities: [gpu]
     command: >
-      --model meta-llama/Llama-3.2-3B-Instruct
+      --model Qwen/Qwen3-14B-AWQ
       --dtype auto
       --api-key ${VLLM_API_KEY}
       --port 8005

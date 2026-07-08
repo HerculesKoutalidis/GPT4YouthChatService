@@ -1,8 +1,8 @@
 # LLM Parameters
 llm:
-  model_name: "meta-llama/Llama-3.2-3B-Instruct"
+  model_name: "Qwen/Qwen3-14B-AWQ"
   temperature: 0.7
-  max_tokens: 2048
+  max_tokens: 4096
   max_history: 7
 
 # RAG Parameters
