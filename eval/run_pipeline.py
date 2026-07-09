@@ -39,6 +39,9 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # Make "src" importable no matter where we're launched from.
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
