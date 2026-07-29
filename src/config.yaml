@@ -9,10 +9,13 @@ llm:
 rag:
   collection_name: "gpt4youth_docs"           # child chunks (search)
   parent_collection_name: "gpt4youth_parents"  # parent sections (context)
-  retrieve_top_k: 50           # dense candidates fetched from Qdrant, fed to the reranker
-  use_reranker: true           # bge-reranker-v2-m3 re-orders the candidates (set false to A/B)
+  retrieve_top_k: 50           # dense prefetch candidates (semantic)
+  sparse_top_k: 50             # sparse prefetch candidates (BM25 keyword)
+  hybrid_top_k: 50             # fused list size fed to the reranker
+  use_sparse: true             # hybrid RRF fusion (false = dense-only, for A/B)
+  use_reranker: true           # bge-reranker-v2-m3 re-orders candidates
   max_parents: 4               # unique parent sections sent to the LLM
-  max_parents_per_doc: 2       # source variety: max parents from a single document
+  max_parents_per_doc: 2       # source variety
 
 # Chatbot System Instructions
 # The '|' tells YAML to keep the newlines and the structure below it.

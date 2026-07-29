@@ -1,6 +1,7 @@
 import os, yaml
 from openai import OpenAI
 from qdrant_client import QdrantClient
+from qdrant_client.models import Prefetch, FusionQuery, Fusion, SparseVector
 
 from .tei_client import embed as tei_embed, rerank as tei_rerank
 
@@ -21,6 +22,11 @@ QDRANT_URL = (
     if IS_DOCKER
     else "http://localhost:6343"
 )
+
+# Named-vector labels on the child collection (must match ingest_pdfs.py).
+DENSE_NAME = "dense"
+SPARSE_NAME = "sparse"
+SPARSE_MODEL_ID = "Qdrant/bm25"
 
 # --------------------------------------------------
 # Configuration loader
@@ -69,16 +75,20 @@ def _format_pages(ps, pe):
 
 class ChatEngine:
     """
-    RAG pipeline (Step 2 — small-to-big + rerank):
+    RAG pipeline (Step 3 — hybrid small-to-big + rerank):
 
     User query
-        -> embed (bge-m3, GPU via tei-embeddings)
-        -> search CHILD collection (gpt4youth_docs)      [retrieve_top_k candidates]
+        -> dense embed (bge-m3, GPU via tei-embeddings)
+           + sparse embed (BM25 via FastEmbed, CPU)
+        -> Qdrant Query API on CHILD collection (gpt4youth_docs):
+             prefetch dense (retrieve_top_k) + prefetch sparse (sparse_top_k)
+             -> server-side RRF fusion -> hybrid_top_k candidates
+           (use_sparse: false falls back to dense-only search)
         -> rerank (bge-reranker-v2-m3, tei-reranker)     [cross-encoder re-order]
         -> dedupe hits to their PARENTS (per-doc cap for diversity)
         -> fetch PARENT sections (gpt4youth_parents)     [rich context]
         -> build prompt + deterministic Sources list
-        -> vLLM / Llama-3.2-3B  (streaming)
+        -> vLLM / Qwen3-14B-AWQ  (streaming, thinking disabled)
     """
 
     def __init__(self):
@@ -93,10 +103,24 @@ class ChatEngine:
         rag = self.config["rag"]
         self.child_collection = rag.get("collection_name", "gpt4youth_docs")
         self.parent_collection = rag.get("parent_collection_name", "gpt4youth_parents")
-        self.retrieve_top_k = rag.get("retrieve_top_k", 50)
+        self.retrieve_top_k = rag.get("retrieve_top_k", 50)   # dense prefetch size
+        self.sparse_top_k = rag.get("sparse_top_k", 50)       # sparse prefetch size
+        self.hybrid_top_k = rag.get("hybrid_top_k", 50)       # fused list size -> reranker
+        self.use_sparse = rag.get("use_sparse", True)
         self.use_reranker = rag.get("use_reranker", True)
         self.max_parents = rag.get("max_parents", 4)
         self.max_parents_per_doc = rag.get("max_parents_per_doc", 2)
+
+        # Sparse query encoder (BM25, CPU, tiny). Loaded lazily so the engine
+        # still starts (dense-only) if fastembed isn't installed.
+        self._sparse_model = None
+        if self.use_sparse:
+            try:
+                from fastembed import SparseTextEmbedding
+                self._sparse_model = SparseTextEmbedding(model_name=SPARSE_MODEL_ID)
+            except Exception as e:
+                print(f"Sparse encoder unavailable ({e}); falling back to dense-only.")
+                self.use_sparse = False
 
         self.model_name = self.config["llm"]["model_name"]
         self.instructions = self.config["system_instructions"]
@@ -106,34 +130,56 @@ class ChatEngine:
         self.last_context = ""
 
     # ---------------------------------------------------------------
-    # Retrieval: child search -> rerank -> parent expansion
+    # Retrieval: hybrid child search -> rerank -> parent expansion
     # ---------------------------------------------------------------
+    def _search_children(self, query: str):
+        """Return child hits: hybrid (dense+sparse, RRF) or dense-only."""
+        qvec = tei_embed(query)  # bge-m3, 1024-dim (GPU via tei-embeddings)
+
+        if self.use_sparse and self._sparse_model is not None:
+            sq = next(iter(self._sparse_model.query_embed(query)))
+            return self.qdrant.query_points(
+                collection_name=self.child_collection,
+                prefetch=[
+                    Prefetch(query=qvec, using=DENSE_NAME,
+                             limit=self.retrieve_top_k),
+                    Prefetch(query=SparseVector(indices=sq.indices.tolist(),
+                                                values=sq.values.tolist()),
+                             using=SPARSE_NAME,
+                             limit=self.sparse_top_k),
+                ],
+                query=FusionQuery(fusion=Fusion.RRF),
+                limit=self.hybrid_top_k,
+                with_payload=True,
+            ).points
+
+        return self.qdrant.query_points(
+            collection_name=self.child_collection,
+            query=qvec,
+            using=DENSE_NAME,
+            limit=self.retrieve_top_k,
+            with_payload=True,
+        ).points
+
     def get_context(self, query: str) -> str:
         self.last_sources = []
         self.last_context = ""
         try:
-            qvec = tei_embed(query)  # bge-m3, 1024-dim (GPU via tei-embeddings)
-            child_hits = self.qdrant.query_points(
-                collection_name=self.child_collection,
-                query=qvec,
-                limit=self.retrieve_top_k,
-                with_payload=True,
-            ).points
-
+            child_hits = self._search_children(query)
             if not child_hits:
                 return ""
 
-            # --- rerank stage: cross-encoder re-orders the dense candidates ---
+            # --- rerank stage: cross-encoder re-orders the fused candidates ---
             # bge-reranker scores (query, child_text) jointly, which is far more
-            # accurate than cosine alone. If the reranker is unreachable we fall
-            # back to the dense order rather than losing context entirely.
+            # accurate than fusion rank alone. If the reranker is unreachable we
+            # fall back to the fused order rather than losing context entirely.
             if self.use_reranker:
                 try:
                     texts = [(h.payload or {}).get("text", "") for h in child_hits]
                     ranked = tei_rerank(query, texts)  # [{"index","score"}...] best-first
                     child_hits = [child_hits[r["index"]] for r in ranked]
                 except Exception as e:
-                    print(f"Rerank failed, falling back to dense order: {e}")
+                    print(f"Rerank failed, falling back to fused order: {e}")
 
             # pick unique parents by (reranked) child order, with a per-document
             # cap so one big manual can't monopolise the context. Keep the matched
@@ -194,7 +240,7 @@ class ChatEngine:
 
     def format_sources(self) -> str:
         """Deterministic Markdown 'Sources' block for the UI to append after the
-        streamed answer. Guarantees citations regardless of the 3B model."""
+        streamed answer. Guarantees citations regardless of the model."""
         if not self.last_sources:
             return ""
         lines = ["", "---", "**Sources**"]
@@ -223,7 +269,7 @@ class ChatEngine:
             "Use the retrieved material below to give concrete, youth-work-specific help. "
             "The material comes from real youth-work manuals; draw specific methods, "
             "activities and structures from it rather than giving generic advice. "
-            "When a method or fact comes from the material, cite its source naturally (e.g. "   
+            "When a method or fact comes from the material, cite its source naturally (e.g. "
             "\"the Compass manual suggests...\"). If you go beyond the material, present it as "
             "general best practice WITHOUT naming a manual, and never invent figures, page "
             "numbers, or rules that aren't in the material.\n\n"
@@ -249,5 +295,5 @@ class ChatEngine:
             temperature=self.config["llm"]["temperature"],
             max_tokens=self.config["llm"]["max_tokens"],
             stream=True,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},   # Qwen3 only
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},  # Qwen3 only
         )

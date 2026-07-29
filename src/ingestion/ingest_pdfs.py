@@ -1,35 +1,35 @@
 """
-ingest_pdfs.py  (v2 — hierarchical parent/child + catalog metadata)
-===================================================================
+ingest_pdfs.py  (v3 — hybrid: dense bge-m3 + sparse BM25, parent/child + catalog metadata)
+==========================================================================================
 Builds the RAG knowledge base into TWO Qdrant collections:
 
-  gpt4youth_docs     child chunks (~180 tokens)  -> what we SEARCH
+  gpt4youth_docs     child chunks (~180 tokens)  -> what we SEARCH (hybrid)
   gpt4youth_parents  parent sections (~1000 tok) -> what we FEED the LLM later
 
-Each child carries: document_id, parent_id, section_path, page range,
-chunk text (raw) + the full doc-level metadata from data/metadata/docs_catalog.xlsx.
-The vector is built from a *contextual* version of the child (title/section/tags
-prepended) so an isolated chunk still retrieves well — but the raw text is what
-gets stored and shown.
+Step 3 (hybrid): the child collection now holds TWO named vectors per point:
+  "dense"  : bge-m3 1024-dim (semantic), via the tei-embeddings service (GPU)
+  "sparse" : BM25 term weights, via FastEmbed (CPU, no model weights needed)
+The sparse side uses Qdrant's server-side IDF modifier, so document-frequency
+statistics live in Qdrant itself — nothing to precompute or keep in sync.
+Sparse vectors are built from the SAME contextual text as dense (header + chunk),
+so exact-term matches on titles/tags also work.
+
+The parent collection is unchanged (fetched by id, never searched).
 
 Prereqs:
   1) Qdrant running:            docker compose up -d qdrant
   2) TEI embeddings running:    docker compose up -d tei-embeddings
   3) Catalog built & reviewed:  python3 src/ingestion/build_catalog.py
   4) PDFs in data/raw_pdfs/
+  5) fastembed installed:       pip install fastembed
 
 Run (from project root, Qdrant on localhost:6343, TEI on localhost:8090):
-  python3 src/ingestion/ingest_pdfs.py            # create-if-missing + upsert
-  python3 src/ingestion/ingest_pdfs.py --reset    # drop & rebuild both collections
+  python3 src/ingestion/ingest_pdfs.py --reset    # REQUIRED once for v3:
+                                                  # the child collection schema
+                                                  # changes to named vectors.
 
 Re-running is safe: each document's old points are deleted before re-upsert
 (deterministic IDs + per-doc cleanup => no duplicates, no orphans).
-
-Step 2: embeddings now come from BAAI/bge-m3 (1024-dim, multilingual) served by
-the tei-embeddings container over HTTP — NOT from an in-process MiniLM on CPU.
-The embedding MODEL is defined once in docker-compose.yml (the tei-embeddings
-service); this script never loads it, it just calls /embed. Because the vector
-size changed 384 -> 1024, you MUST re-ingest with --reset.
 """
 
 import os
@@ -45,8 +45,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     PointStruct, VectorParams, Distance, Filter, FieldCondition, MatchValue,
+    SparseVectorParams, SparseVector, Modifier,
 )
 from transformers import AutoTokenizer
+from fastembed import SparseTextEmbedding
 
 import pdf_processing as pp
 from catalog import CATALOG_COLUMNS, SUPPORTED_LANGS, load_catalog
@@ -64,14 +66,22 @@ QDRANT_URL = "http://localhost:6343"
 CHILD_COLLECTION = "gpt4youth_docs"
 PARENT_COLLECTION = "gpt4youth_parents"
 
-# Ingestion-time knobs (chunk sizing). Kept identical to Step 1 on purpose, so
-# the ONLY variable changing in this step is the embedding model + reranker.
+# Named-vector labels on the child collection (must match rag_engine.py).
+DENSE_NAME = "dense"
+SPARSE_NAME = "sparse"
+
+# BM25 sparse encoder (FastEmbed, CPU). Term weighting only; IDF is applied
+# server-side by Qdrant thanks to Modifier.IDF on the collection.
+SPARSE_MODEL_ID = "Qdrant/bm25"
+
+# Ingestion-time knobs (chunk sizing) — unchanged since Step 1 on purpose:
+# the only Step 3 variable is the added sparse vector.
 CHILD_TOKENS, CHILD_OVERLAP = 180, 30      # small, precise chunks (what we search)
 PARENT_TOKENS, PARENT_OVERLAP = 1000, 120  # not embedded for search; just context
 
 # Must match the --model-id of the `tei-embeddings` service in docker-compose.yml.
 # Used ONLY to load the tokenizer locally for token-based chunk sizing + token_count;
-# the actual vectors come from the TEI service, not from this.
+# the actual dense vectors come from the TEI service, not from this.
 EMBED_MODEL_ID = os.environ.get("EMBED_MODEL_ID", "BAAI/bge-m3")
 
 NS = uuid.NAMESPACE_URL
@@ -85,8 +95,13 @@ def det_id(*parts) -> str:
 # Pure builder (no IO / no network) — unit-testable
 # ---------------------------------------------------------------------------
 def build_points_for_doc(file_name, pages, toc, meta, child_splitter,
-                         parent_splitter, encode_fn, tokenizer=None):
-    """Return (child_points, parent_points) as (id, vector, payload) tuples."""
+                         parent_splitter, encode_fn, sparse_encode_fn=None,
+                         tokenizer=None):
+    """Return (child_points, parent_points).
+
+    Children get {"dense": [...], "sparse": SparseVector(...)} named vectors
+    (sparse omitted when sparse_encode_fn is None); parents keep a single
+    unnamed dense vector as before."""
     full_text, starts, page_nums = pp.join_pages(pages)
     doc_title = meta.get("title") or os.path.splitext(file_name)[0]
     tags_list = pp.parse_tags(meta.get("tags"))
@@ -113,11 +128,10 @@ def build_points_for_doc(file_name, pages, toc, meta, child_splitter,
         starts=starts, page_nums=page_nums, toc=toc, doc_title=doc_title,
     )
 
-    # ---- parents ----
-    parent_points, parent_texts, parent_ids = [], [], []
+    # ---- parents (unchanged: single unnamed dense vector, fetched by id) ----
+    parent_points, parent_texts = [], []
     for par in parents:
         pid = det_id(file_name, "parent", par.index)
-        parent_ids.append(pid)
         parent_texts.append(par.text)
         parent_points.append({
             "id": pid,
@@ -138,7 +152,7 @@ def build_points_for_doc(file_name, pages, toc, meta, child_splitter,
     for pt, v in zip(parent_points, parent_vecs):
         pt["vector"] = v
 
-    # ---- children (embedded with contextual header) ----
+    # ---- children (hybrid: dense + sparse, both from the contextual text) ----
     child_points, child_embed_texts = [], []
     for par in parents:
         pid = det_id(file_name, "parent", par.index)
@@ -159,9 +173,18 @@ def build_points_for_doc(file_name, pages, toc, meta, child_splitter,
                 "token_count": tok,
             }
             child_points.append({"id": cid, "payload": payload})
-    child_vecs = encode_fn(child_embed_texts) if child_embed_texts else []
-    for pt, v in zip(child_points, child_vecs):
-        pt["vector"] = v
+
+    dense_vecs = encode_fn(child_embed_texts) if child_embed_texts else []
+    sparse_vecs = (sparse_encode_fn(child_embed_texts)
+                   if (sparse_encode_fn and child_embed_texts) else None)
+
+    for i, (pt, dv) in enumerate(zip(child_points, dense_vecs)):
+        vec = {DENSE_NAME: dv}
+        if sparse_vecs is not None:
+            sv = sparse_vecs[i]
+            vec[SPARSE_NAME] = SparseVector(
+                indices=sv.indices.tolist(), values=sv.values.tolist())
+        pt["vector"] = vec
 
     return child_points, parent_points
 
@@ -169,7 +192,23 @@ def build_points_for_doc(file_name, pages, toc, meta, child_splitter,
 # ---------------------------------------------------------------------------
 # Qdrant IO
 # ---------------------------------------------------------------------------
-def ensure_collection(qc, name, dim, reset):
+def ensure_child_collection(qc, name, dim, reset):
+    """Child collection: named dense vector + named sparse vector (IDF)."""
+    if reset and qc.collection_exists(name):
+        log.info(f"Dropping collection {name}")
+        qc.delete_collection(name)
+    if not qc.collection_exists(name):
+        log.info(f"Creating collection {name} "
+                 f"(dense[{DENSE_NAME}]={dim} Cosine + sparse[{SPARSE_NAME}] IDF)")
+        qc.create_collection(
+            name,
+            vectors_config={DENSE_NAME: VectorParams(size=dim, distance=Distance.COSINE)},
+            sparse_vectors_config={SPARSE_NAME: SparseVectorParams(modifier=Modifier.IDF)},
+        )
+
+
+def ensure_parent_collection(qc, name, dim, reset):
+    """Parent collection: unchanged single unnamed dense vector."""
     if reset and qc.collection_exists(name):
         log.info(f"Dropping collection {name}")
         qc.delete_collection(name)
@@ -188,9 +227,8 @@ def to_points(items):
     return [PointStruct(id=i["id"], vector=i["vector"], payload=i["payload"]) for i in items]
 
 
-# Qdrant caps a single HTTP request at 32MB. A 1024-dim bge-m3 vector serialises
-# to ~2.7x the old 384-dim MiniLM one, so a whole PDF's children can blow past
-# that in one shot. Upsert in batches to keep each request comfortably under it.
+# Qdrant caps a single HTTP request at 32MB; upsert in batches (1024-dim dense
+# + sparse per point adds up fast on big PDFs).
 UPSERT_BATCH = 256
 
 
@@ -213,12 +251,12 @@ def main():
         raise SystemExit(f"No catalog at {CATALOG_PATH}. Run build_catalog.py first "
                          f"(or pass --allow-missing).")
 
-    # Tokenizer is only for chunk sizing / token_count — the vectors come from TEI.
+    # Tokenizer is only for chunk sizing / token_count — dense vectors come from TEI.
     log.info(f"Loading tokenizer for {EMBED_MODEL_ID} (CPU, chunk sizing only)...")
     tokenizer = AutoTokenizer.from_pretrained(EMBED_MODEL_ID)
 
-    # Ask the TEI embeddings service for the vector size (single source of truth).
-    log.info("Probing tei-embeddings for the vector dimension...")
+    # Ask the TEI embeddings service for the dense vector size (single source of truth).
+    log.info("Probing tei-embeddings for the dense vector dimension...")
     try:
         dim = len(tei_embed("dimension probe"))
     except Exception as e:
@@ -226,7 +264,14 @@ def main():
             f"Cannot reach tei-embeddings ({e}).\n"
             f"Start it with:  docker compose up -d tei-embeddings"
         )
-    log.info(f"TEI embeddings dim = {dim}")
+    log.info(f"TEI dense dim = {dim}")
+
+    log.info(f"Loading sparse encoder {SPARSE_MODEL_ID} (FastEmbed, CPU)...")
+    sparse_model = SparseTextEmbedding(model_name=SPARSE_MODEL_ID)
+
+    def sparse_encode_fn(texts):
+        # BM25 term weights per chunk; Qdrant applies IDF server-side.
+        return list(sparse_model.embed(texts))
 
     child_sp = pp.make_token_splitter(tokenizer, CHILD_TOKENS, CHILD_OVERLAP)
     parent_sp = pp.make_token_splitter(tokenizer, PARENT_TOKENS, PARENT_OVERLAP)
@@ -236,8 +281,8 @@ def main():
         return tei_embed(texts)
 
     qc = QdrantClient(url=QDRANT_URL)
-    ensure_collection(qc, CHILD_COLLECTION, dim, args.reset)
-    ensure_collection(qc, PARENT_COLLECTION, dim, args.reset)
+    ensure_child_collection(qc, CHILD_COLLECTION, dim, args.reset)
+    ensure_parent_collection(qc, PARENT_COLLECTION, dim, args.reset)
 
     pdfs = sorted(f for f in os.listdir(RAW_PDF_DIR) if f.lower().endswith(".pdf"))
     tot_c = tot_p = 0
@@ -253,7 +298,7 @@ def main():
 
         lang = (meta.get("language") or "").lower()
         if lang and lang not in SUPPORTED_LANGS:
-            log.warning(f"SKIP {fn}: language '{lang}' not supported in Step 1.")
+            log.warning(f"SKIP {fn}: language '{lang}' not in SUPPORTED_LANGS.")
             continue
 
         try:
@@ -263,7 +308,8 @@ def main():
             continue
 
         children, parents = build_points_for_doc(
-            fn, pages, toc, meta, child_sp, parent_sp, encode_fn, tokenizer=tokenizer,
+            fn, pages, toc, meta, child_sp, parent_sp, encode_fn,
+            sparse_encode_fn=sparse_encode_fn, tokenizer=tokenizer,
         )
         document_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, fn))
         delete_doc(qc, CHILD_COLLECTION, document_id)     # clean re-ingest
@@ -278,9 +324,9 @@ def main():
                  f"[{meta.get('metadata_source','')}]")
 
     log.info(f"DONE. {tot_p} parents in '{PARENT_COLLECTION}', "
-             f"{tot_c} children in '{CHILD_COLLECTION}'.")
-    log.info("Next (Step 2.3): wire bge-m3 query embedding + bge-reranker-v2-m3 "
-             "into rag_engine.py, and add retrieve_top_k / rerank_top_n to config.yaml.")
+             f"{tot_c} children in '{CHILD_COLLECTION}' (dense+sparse).")
+    log.info("Next (Step 3.2): hybrid RRF retrieval in rag_engine.py "
+             "(prefetch dense+sparse -> fusion -> rerank -> parents).")
 
 
 if __name__ == "__main__":
