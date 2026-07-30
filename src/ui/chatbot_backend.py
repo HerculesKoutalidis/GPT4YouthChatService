@@ -47,14 +47,19 @@ def process_query(prompt):
         except Exception as e:
             st.error(f"Engine Error: {e}")
 
-# --- CUSTOM HEADER ---
+# --- CUSTOM HEADER (centered image, aligned with the title) ---
 try:
     col_empty_left, col_center, col_empty_right = st.columns([1, 4, 1])
     with col_center:
-        st.markdown("<div style='text-align: center; margin-bottom: 20px;'><h1>GPT4Youth Chat</h1></div>", unsafe_allow_html=True)
-        learning_img = Image.open(LEARNING_IMG_PATH)
-        st.markdown("<style>div.stImage {text-align: center; display: block; margin-left: auto; margin-right: auto; width: 100%;}</style>", unsafe_allow_html=True)
-        st.image(learning_img, width=600) 
+        st.markdown(
+            "<div style='text-align:center; margin-bottom:20px;'><h1>GPT4Youth Chat</h1></div>",
+            unsafe_allow_html=True,
+        )
+        # Nest 3 more columns INSIDE the center column and put the image in the
+        # middle one -> it sits centered under the (already centered) title.
+        _l, _mid, _r = st.columns([1, 2, 1])
+        with _mid:
+            st.image(LEARNING_IMG_PATH, use_container_width=True)
 except FileNotFoundError:
     st.title("🇪🇺 EU Education & Job Market Bot")
 
