@@ -78,6 +78,7 @@ class ChatEngine:
     RAG pipeline (Step 3 — hybrid small-to-big + rerank):
 
     User query
+        -> rewrite to a standalone query (LLM, if multi-turn)
         -> dense embed (bge-m3, GPU via tei-embeddings)
            + sparse embed (BM25 via FastEmbed, CPU)
         -> Qdrant Query API on CHILD collection (gpt4youth_docs):
@@ -110,6 +111,8 @@ class ChatEngine:
         self.use_reranker = rag.get("use_reranker", True)
         self.max_parents = rag.get("max_parents", 4)
         self.max_parents_per_doc = rag.get("max_parents_per_doc", 2)
+        self.use_query_rewrite = rag.get("use_query_rewrite", True)
+        self.rewrite_max_tokens = rag.get("rewrite_max_tokens", 80)
 
         # Sparse query encoder (BM25, CPU, tiny). Loaded lazily so the engine
         # still starts (dense-only) if fastembed isn't installed.
@@ -253,6 +256,55 @@ class ChatEngine:
             lines.append(line)
         return "\n".join(lines)
 
+    def _rewrite_query(self, messages: list, current_prompt: str) -> str:
+        """Turn a possibly-context-dependent last message (e.g. "yes", "the
+        second one") into a standalone search query, using the conversation.
+
+        Uses the same vLLM model (no extra infra). Deterministic (temp 0),
+        non-streamed, thinking disabled. Falls back to the plain concatenation
+        if anything goes wrong or there\'s no real history to fold in."""
+        history = [m for m in messages[1:] if m["role"] in ("user", "assistant")]
+        # Nothing to disambiguate against -> concatenation (== old behaviour).
+        if not history:
+            return self._build_retrieval_query(messages, current_prompt)
+
+        convo = "\n".join(
+            f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+            for m in history[-(2 * self.config['llm']['max_history']):]
+        )
+        rewrite_instructions = (
+            "You rewrite the user\'s latest message into a single, self-contained "
+            "search query for a document retrieval system about EU youth work, "
+            "Erasmus+ and non-formal education. Resolve references (pronouns, "
+            "\"yes\", \"the first one\") using the conversation. Keep the user\'s "
+            "own key terms and acronyms. Output ONLY the query, no quotes, no preamble."
+        )
+        user_block = (
+            f"Conversation so far:\n{convo}\n\n"
+            f"Latest user message:\n{current_prompt}\n\n"
+            "Standalone search query:"
+        )
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": rewrite_instructions},
+                    {"role": "user", "content": user_block},
+                ],
+                temperature=0.0,
+                max_tokens=self.rewrite_max_tokens,
+                stream=False,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            )
+            rewritten = (resp.choices[0].message.content or "").strip()
+            # Guard against a degenerate/empty rewrite.
+            if len(rewritten) < 3:
+                return self._build_retrieval_query(messages, current_prompt)
+            return rewritten
+        except Exception as e:
+            print(f"Query rewrite failed, using concatenation: {e}")
+            return self._build_retrieval_query(messages, current_prompt)
+
     def _build_retrieval_query(self, messages: list, current_prompt: str) -> str:
         recent = [m["content"] for m in messages[-4:] if m["role"] != "system"]
         recent.append(current_prompt)
@@ -262,7 +314,10 @@ class ChatEngine:
     # Generation
     # ---------------------------------------------------------------
     def get_llm_response(self, messages, prompt):
-        retrieval_query = self._build_retrieval_query(messages, prompt)
+        if self.use_query_rewrite:
+            retrieval_query = self._rewrite_query(messages, prompt)
+        else:
+            retrieval_query = self._build_retrieval_query(messages, prompt)
         context_data = self.get_context(retrieval_query)
 
         enhanced_prompt = (

@@ -16,6 +16,8 @@ rag:
   use_reranker: true           # bge-reranker-v2-m3 re-orders candidates
   max_parents: 4               # unique parent sections sent to the LLM
   max_parents_per_doc: 2       # source variety
+  use_query_rewrite: true      # LLM rewrites the last message into a standalone query
+  rewrite_max_tokens: 150      # cap for the rewrite call (short, fast)
 
 # Chatbot System Instructions
 # The '|' tells YAML to keep the newlines and the structure below it.
