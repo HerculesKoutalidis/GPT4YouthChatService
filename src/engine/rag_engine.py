@@ -335,7 +335,7 @@ class ChatEngine:
                     {"role": "user", "content": text[:1000]},
                 ],
                 temperature=0.0,
-                max_tokens=24,
+                max_tokens=35,
                 stream=False,
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )

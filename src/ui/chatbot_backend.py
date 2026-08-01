@@ -18,7 +18,7 @@ USER_AVATAR = os.path.join(UI_DIR, "images", "user_image.jpg")
 ASSISTANT_AVATAR = os.path.join(UI_DIR, "images", "business_woman.png")
 LEARNING_IMG_PATH = os.path.join(UI_DIR, "images", "digitaleducation.png")
 
-TITLE_DISPLAY_LEN = 20  # sidebar shows first ~20 chars + "…"
+TITLE_DISPLAY_LEN = 28  # sidebar shows first ~20 chars + "…"
 
 
 # --- Initialize Engine (once) ---
