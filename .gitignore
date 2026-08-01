@@ -14,6 +14,10 @@ data/raw_pdfs/*.txt
 # Database Storage
 qdrant_storage/*
 qdrant_storage/
+data/
+*.db
+*.db-wal
+*.db-shm
 
 # Configuration
 # We track the main config but ignore any "local" overrides
@@ -35,6 +39,7 @@ data/metadata/*
 
 #Documents
 docs/*
+!docs/PROJECT_STATE.md
 
 __pycache__/
 

@@ -309,6 +309,45 @@ class ChatEngine:
         recent = [m["content"] for m in messages[-4:] if m["role"] != "system"]
         recent.append(current_prompt)
         return " ".join(recent)
+    
+
+    def generate_title(self, first_user_message: str) -> str:
+        """Short (3-6 word) conversation title from the first user message.
+        One cheap, deterministic, non-streamed call on the same vLLM model
+        (thinking disabled), mirroring _rewrite_query. Returns "" on any
+        failure so the UI falls back to the truncated first message."""
+        text = (first_user_message or "").strip()
+        if not text:
+            return ""
+
+        title_instructions = (
+            "You write a very short title (3 to 6 words) summarizing the topic "
+            "of the user's message, for a list of past conversations in a "
+            "youth-work assistant (EU youth work, Erasmus+, non-formal education). "
+            "No quotes, no trailing punctuation, no preamble. Reply with ONLY the "
+            "title, in the same language as the user's message."
+        )
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": title_instructions},
+                    {"role": "user", "content": text[:1000]},
+                ],
+                temperature=0.0,
+                max_tokens=24,
+                stream=False,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            )
+            title = (resp.choices[0].message.content or "").strip()
+            # keep first line only; strip a stray "Title:" prefix / quotes / period
+            title = title.splitlines()[0].strip() if title else ""
+            if title.lower().startswith("title:"):
+                title = title[6:].strip()
+            return title.strip('"\'').rstrip(".").strip()
+        except Exception as e:
+            print(f"Title generation failed, UI will fall back: {e}")
+            return ""
 
     # ---------------------------------------------------------------
     # Generation
