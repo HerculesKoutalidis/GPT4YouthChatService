@@ -41,6 +41,10 @@ data/metadata/*
 docs/*
 !docs/PROJECT_STATE.md
 
+
+#Notes
+notes.txt
+
 __pycache__/
 
 

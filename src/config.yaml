@@ -2,8 +2,8 @@
 llm:
   model_name: "Qwen/Qwen3-14B-AWQ"
   temperature: 0.7
-  max_tokens: 4096
-  max_history: 7
+  max_tokens: 8192
+  max_history: 12  #this means 12 rounds. 12 user questions and 12 assistant answers. 20 messages in total.
 
 # RAG Parameters
 rag:
