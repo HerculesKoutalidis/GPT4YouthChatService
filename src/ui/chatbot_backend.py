@@ -282,7 +282,7 @@ if (
         st.rerun()
 
 # --- User Input Field ---------------------------------------------------------
-if prompt := st.chat_input("Ask anything about EU-related matters for young people..."):
+if prompt := st.chat_input("Ask anything about young people matters in the EU..."):
     st.session_state.editing_last = False
     # Create the conversation lazily on the FIRST user message (empty chats
     # never hit the DB). Provisional title = first message; upgraded to an
