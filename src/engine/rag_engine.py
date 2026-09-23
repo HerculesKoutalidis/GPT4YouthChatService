@@ -361,8 +361,11 @@ class ChatEngine:
 
         enhanced_prompt = (
             "Use the retrieved material below to give concrete, youth-work-specific help. "
-            "The material comes from real youth-work manuals; draw specific methods, "
-            "activities and structures from it rather than giving generic advice. "
+            "The material comes from real youth-work manuals and EU programme guides; draw "
+            "specific methods, activities, structures, rules, and procedures from it rather "
+            "than giving generic advice. When you describe an activity from the material, "
+            "include ALL its steps, timing, materials, and facilitator notes so the youth "
+            "worker can run it directly — do not just name it and say 'see manual X'. "
             "When a method or fact comes from the material, cite its source naturally (e.g. "
             "\"the Compass manual suggests...\"). If you go beyond the material, present it as "
             "general best practice WITHOUT naming a manual, and never invent figures, page "
@@ -370,7 +373,9 @@ class ChatEngine:
             f"Retrieved material:\n{context_data if context_data else '(nothing retrieved)'}\n\n"
             f"User question:\n{prompt}\n\n"
             "If the material doesn't cover the question, say so briefly and fall back to "
-            "general best practice, framed as professional advice."
+            "general best practice, framed as professional advice. "
+            "If the user previously asked for something and now wants an alternative, use "
+            "a DIFFERENT activity type and DIFFERENT source manuals from what you already suggested."
         )
 
         max_history = self.config["llm"]["max_history"]
