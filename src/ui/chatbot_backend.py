@@ -96,7 +96,7 @@ def start_new_chat():
 def load_chat(conv_id: str):
     """Load a past conversation into the main view. System prompt is re-prepended
     from CURRENT config, so prompt fixes apply retroactively."""
-    st.session_state.messages = _fresh_messages() + store.get_messages(conv_id)
+    st.session_state.messages = _fresh_messages() + store.get_messages(conv_id, user_id)
     st.session_state.conversation_id = conv_id
     st.session_state.editing_last = False
     st.session_state.needs_title = False
@@ -125,7 +125,7 @@ def process_query(prompt):
 
             # persist the assistant turn (conversation was created on the user turn)
             if st.session_state.conversation_id:
-                store.append_message(st.session_state.conversation_id, "assistant", full_response)
+                store.append_message(st.session_state.conversation_id, "assistant", full_response, user_id)
         except Exception as e:
             st.error(f"Engine Error: {e}")
 
@@ -146,7 +146,7 @@ user_id = get_current_user()
 
 # --- SIDEBAR: conversations ---------------------------------------------------
 with st.sidebar:
-    st.markdown("## 💬 Conversations")
+    st.markdown("## Conversations")
 
     if st.button("➕  New chat", use_container_width=True, type="primary"):
         start_new_chat()
@@ -185,22 +185,33 @@ with st.sidebar:
             )
             c1, c2 = st.columns(2)
             if c1.button("💾 Save", key=f"rename_btn_{cid}", use_container_width=True):
-                store.rename_conversation(cid, new_name)
+                store.rename_conversation(cid, new_name, user_id)
                 st.rerun()
             if c2.button("🗑 Delete", key=f"del_{cid}", use_container_width=True):
-                store.delete_conversation(cid)
+                store.delete_conversation(cid, user_id)
                 if is_active:
                     start_new_chat()
                 st.rerun()
 
-    # --- Dev-only user switcher (REMOVE once Keycloak provides identity) ---
+    # --- User info & Logout ---
     st.divider()
-    with st.expander("🔧 Dev: current user", expanded=False):
-        st.text_input(
-            "user id (temporary — replaced by Keycloak login)",
-            key="dev_user_field",
+    st.caption(f"Logged in as: **{user_id}**")
+    if st.button("⏻ Log out", use_container_width=True):
+        # 1. Clear oauth2-proxy session, then
+        # 2. Redirect to Keycloak logout so the IdP session is also terminated.
+        #    post_logout_redirect_uri brings the user back to the app (→ fresh login).
+        _KC_LOGOUT = (
+            "https://keycloak.toolbox.epu.ntua.gr/realms/GPT4YOUTH1"
+            "/protocol/openid-connect/logout"
+            "?client_id=chatbot_service"
+            "&post_logout_redirect_uri=https://gpt4youth.gpu.epu.ntua.gr"
         )
-        st.caption(f"Acting as: **{user_id}**")
+        # oauth2-proxy's /oauth2/sign_out accepts ?rd= to redirect after clearing its cookie
+        _LOGOUT_URL = f"/oauth2/sign_out?rd={_KC_LOGOUT}"
+        st.markdown(
+            f'<meta http-equiv="refresh" content="0;url={_LOGOUT_URL}">',
+            unsafe_allow_html=True,
+        )
 
 
 # --- CUSTOM HEADER (centered image, aligned with the title) ---
@@ -246,9 +257,9 @@ for i, message in enumerate(st.session_state.messages):
                     # and everything after, then re-add the edited text; the
                     # regenerated assistant turn is persisted by process_query.
                     if st.session_state.conversation_id:
-                        store.truncate_from(st.session_state.conversation_id, i - 1)
+                        store.truncate_from(st.session_state.conversation_id, i - 1, user_id)
                         store.append_message(
-                            st.session_state.conversation_id, "user", edited_text
+                            st.session_state.conversation_id, "user", edited_text, user_id
                         )
                     st.session_state.editing_last = False
                     st.rerun()
@@ -277,7 +288,7 @@ if (
         first_user = next(
             (m["content"] for m in st.session_state.messages if m["role"] == "user"), ""
         )
-        store.rename_conversation(st.session_state.conversation_id, make_title(first_user))
+        store.rename_conversation(st.session_state.conversation_id, make_title(first_user), user_id)
         st.session_state.needs_title = False
         st.rerun()
 
@@ -290,6 +301,6 @@ if prompt := st.chat_input("Ask anything about young people matters in the EU...
     if st.session_state.conversation_id is None:
         st.session_state.conversation_id = store.create_conversation(user_id, title=prompt)
         st.session_state.needs_title = True
-    store.append_message(st.session_state.conversation_id, "user", prompt)
+    store.append_message(st.session_state.conversation_id, "user", prompt, user_id)
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.rerun()

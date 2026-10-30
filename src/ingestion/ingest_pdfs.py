@@ -280,7 +280,7 @@ def main():
         # bge-m3 via TEI (GPU). tei_embed batches internally (<=32/request).
         return tei_embed(texts)
 
-    qc = QdrantClient(url=QDRANT_URL)
+    qc = QdrantClient(url=QDRANT_URL, timeout=180)
     ensure_child_collection(qc, CHILD_COLLECTION, dim, args.reset)
     ensure_parent_collection(qc, PARENT_COLLECTION, dim, args.reset)
 

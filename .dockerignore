@@ -2,3 +2,14 @@
 __pycache__
 .git
 chatbot_backend_local.py
+
+.git
+venv
+*.pyc
+.pytest_cache
+data/
+qdrant_storage/
+tei_data/
+eval/results/
+*.db
+.env
