@@ -122,30 +122,38 @@ def list_conversations(user_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def rename_conversation(conv_id: str, title: str) -> None:
+def rename_conversation(conv_id: str, title: str, user_id: str) -> None:
     title = (title or "").strip().replace("\n", " ")[:80] or "New chat"
     with _connect() as conn:
         conn.execute(
-            "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
-            (title, _now(), conv_id),
+            "UPDATE conversations SET title = ?, updated_at = ? "
+            "WHERE id = ? AND user_id = ?",
+            (title, _now(), conv_id, user_id),
         )
 
 
-def delete_conversation(conv_id: str) -> None:
-    """Delete a conversation and (via CASCADE) all its messages."""
+def delete_conversation(conv_id: str, user_id: str) -> None:
+    """Delete a conversation and (via CASCADE) all its messages.
+    Only deletes if the conversation belongs to user_id."""
     with _connect() as conn:
-        conn.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
+        conn.execute(
+            "DELETE FROM conversations WHERE id = ? AND user_id = ?",
+            (conv_id, user_id),
+        )
 
 
 # --- messages ----------------------------------------------------------------
 
-def get_messages(conv_id: str) -> list[dict]:
-    """Return non-system messages [{role, content}, ...] in order."""
+def get_messages(conv_id: str, user_id: str) -> list[dict]:
+    """Return non-system messages [{role, content}, ...] in order.
+    Only returns messages if the conversation belongs to user_id."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT role, content FROM messages "
-            "WHERE conversation_id = ? ORDER BY seq ASC",
-            (conv_id,),
+            "SELECT m.role, m.content FROM messages m "
+            "JOIN conversations c ON m.conversation_id = c.id "
+            "WHERE m.conversation_id = ? AND c.user_id = ? "
+            "ORDER BY m.seq ASC",
+            (conv_id, user_id),
         ).fetchall()
     return [{"role": r["role"], "content": r["content"]} for r in rows]
 
@@ -158,10 +166,18 @@ def _next_seq(conn, conv_id: str) -> int:
     return int(row["m"]) + 1
 
 
-def append_message(conv_id: str, role: str, content: str) -> int:
-    """Append a message at the next seq; bump the conversation's updated_at."""
+def append_message(conv_id: str, role: str, content: str, user_id: str) -> int:
+    """Append a message at the next seq; bump the conversation's updated_at.
+    Only operates if the conversation belongs to user_id."""
     ts = _now()
     with _connect() as conn:
+        # Verify ownership before writing
+        owner = conn.execute(
+            "SELECT 1 FROM conversations WHERE id = ? AND user_id = ?",
+            (conv_id, user_id),
+        ).fetchone()
+        if not owner:
+            return -1
         seq = _next_seq(conn, conv_id)
         conn.execute(
             "INSERT INTO messages (conversation_id, seq, role, content, created_at) "
@@ -174,9 +190,16 @@ def append_message(conv_id: str, role: str, content: str) -> int:
     return seq
 
 
-def truncate_from(conv_id: str, seq: int) -> None:
-    """Delete messages with seq >= `seq`. Used when a user edits & regenerates."""
+def truncate_from(conv_id: str, seq: int, user_id: str) -> None:
+    """Delete messages with seq >= `seq`. Used when a user edits & regenerates.
+    Only operates if the conversation belongs to user_id."""
     with _connect() as conn:
+        owner = conn.execute(
+            "SELECT 1 FROM conversations WHERE id = ? AND user_id = ?",
+            (conv_id, user_id),
+        ).fetchone()
+        if not owner:
+            return
         conn.execute(
             "DELETE FROM messages WHERE conversation_id = ? AND seq >= ?",
             (conv_id, seq),
