@@ -112,9 +112,9 @@ services:
       - .:/app
     depends_on:
       - qdrant
-      # - vllm-engine        # uncomment when GPU is available
-      # - tei-embeddings     # uncomment when GPU is available
-      # - tei-reranker       # uncomment when GPU is available
+      - vllm-engine    
+      - tei-embeddings    
+      - tei-reranker       
 
   # 4. OAUTH2 PROXY (authentication layer in front of Streamlit)
   oauth2-proxy:

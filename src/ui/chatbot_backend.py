@@ -113,7 +113,7 @@ def process_query(prompt):
             for chunk in stream:
                 if chunk.choices[0].delta.content:
                     full_response += chunk.choices[0].delta.content
-                    message_placeholder.markdown(full_response + "▌")
+                    message_placeholder.markdown(full_response + "")
 
             # append deterministic citations (guaranteed, not model-dependent)
             sources_md = engine.format_sources()
